@@ -41,12 +41,16 @@
 #define BACK_TRIG_PIN 30 // חיישן רוורס אחורי
 #define BACK_ECHO_PIN 31 
 
-// --- חיישני גבול אולטרסוניים (החלפה של מפסקי הגבול למנוע הרמה) ---
+// --- חיישני גבול אולטרסוניים למערכת ההרמה והצביעה ---
 #define TOP_TRIG_PIN 34    // חיישן עליון - מזהה מתי הדיזה קרובה לתקרה
 #define TOP_ECHO_PIN 35
 
 #define BOTTOM_TRIG_PIN 36 // חיישן תחתון - מזהה מתי הדיזה קרובה לרצפה
 #define BOTTOM_ECHO_PIN 37
+
+// חיישן דיזה חדש - לזיהוי דלתות/חלונות למניעת ריסוס באוויר
+#define NOZZLE_TRIG_PIN 38 
+#define NOZZLE_ECHO_PIN 39
 
 const float STOP_DISTANCE_CM = 5.0; // המרחק שבו נרצה שהעגלה תעצור מהרצפה/תקרה
 
@@ -91,6 +95,7 @@ float wallRearDist = 999.0;
 float backDist = 999.0;
 float topDist = 999.0;
 float bottomDist = 999.0;
+float nozzleDist = 999.0; // משתנה לחיישן הדיזה
 
 // מונה האנקודר - חייב להיות volatile כי אנחנו משנים אותו בתוך פונקציית פסיקה (ISR)!
 volatile long liftPosition = 0; 
@@ -133,9 +138,10 @@ void setup() {
   pinMode(WALL_REAR_TRIG_PIN, OUTPUT); pinMode(WALL_REAR_ECHO_PIN, INPUT);
   pinMode(BACK_TRIG_PIN, OUTPUT); pinMode(BACK_ECHO_PIN, INPUT);
   
-  // הגדרת פינים של חיישני גבול ההרמה
+  // הגדרת פינים של חיישני גבול ההרמה והדיזה
   pinMode(TOP_TRIG_PIN, OUTPUT); pinMode(TOP_ECHO_PIN, INPUT);
   pinMode(BOTTOM_TRIG_PIN, OUTPUT); pinMode(BOTTOM_ECHO_PIN, INPUT);
+  pinMode(NOZZLE_TRIG_PIN, OUTPUT); pinMode(NOZZLE_ECHO_PIN, INPUT); // חיישן הדיזה החדש
 
   // הגדרת אנקודר וחיבור פסיקת חומרה (Interrupt) - מופעל בירידת מתח מ-1 ל-0
   pinMode(ENCODER_CLK_A, INPUT_PULLUP);
@@ -169,9 +175,10 @@ void loop() {
     wallRearDist = getDistance(WALL_REAR_TRIG_PIN, WALL_REAR_ECHO_PIN);
     backDist = getDistance(BACK_TRIG_PIN, BACK_ECHO_PIN);
     
-    // דגימת חיישני הגבול העליון והתחתון
+    // דגימת חיישני הגבול העליון והתחתון, וחיישן הדיזה
     topDist = getDistance(TOP_TRIG_PIN, TOP_ECHO_PIN);
     bottomDist = getDistance(BOTTOM_TRIG_PIN, BOTTOM_ECHO_PIN);
+    nozzleDist = getDistance(NOZZLE_TRIG_PIN, NOZZLE_ECHO_PIN); // מתעדכן ברציפות
     
     updateGyroYaw(); // מעדכן איפה אנחנו במרחב
   }
@@ -212,19 +219,26 @@ void loop() {
       digitalWrite(DC_LIFT_IN2, LOW);
       analogWrite(DC_LIFT_ENA, 180); // עוצמה סבירה
       
-      // פותחים את שסתום האיירלס להתחיל לרסס צבע
-      Serial.println("Paint valve ON.");
-      digitalWrite(VALVE_PIN, VALVE_OPEN);
-      
+      // לא פותחים אוטומטית, ההחלטה תתבצע בסטייט הבא לפי חיישן הדיזה
       currentState = STATE_PAINT_STRIP_DOWN;
       break;
 // ===================================================
     case STATE_PAINT_STRIP_DOWN:
       // כל עוד המרחק מהרצפה גדול מ-15 ס"מ (או שיש שגיאת קריאה 0), ממשיכים
       if (bottomDist > STOP_DISTANCE_CM || bottomDist <= 0) {
-         // עובד ברקע - המנוע מוריד את העגלה וממשיך לרסס צבע
+         // עובד ברקע - המנוע מוריד את העגלה
+         
+         // ---> תוספת חדשה: בקרת זיהוי דלתות / חלונות בזמן אמת <---
+         if (nozzleDist > 20.0 || nozzleDist <= 0) {
+             // זיהינו מרחק חריג (דלת, חלון, חלל ריק) - עוצרים צביעה מיד!
+             digitalWrite(VALVE_PIN, VALVE_CLOSED);
+         } else {
+             // אנחנו מול קיר במרחק תקין - אפשר לרסס צבע
+             digitalWrite(VALVE_PIN, VALVE_OPEN);
+         }
+         
       } else {
-        // הגענו למטה! החיישן זיהה שאנחנו 15 ס"מ מהרצפה
+        // הגענו למטה! החיישן זיהה שאנחנו קרובים לרצפה
         Serial.println("Floor Reached (15cm). Valve OFF.");
         digitalWrite(VALVE_PIN, VALVE_CLOSED); // סוגרים את ברז הצבע!
         
@@ -233,11 +247,6 @@ void loop() {
         digitalWrite(DC_LIFT_IN2, LOW);
         analogWrite(DC_LIFT_ENA, 0);
         delay(500); 
-        
-        // הערה לעצמי: אם בשלב הבא בפרויקט נרצה שהדיזה תעלה בחזרה למעלה,
-        // אז פה נשנה כיוון מנוע, נגדיר מצב STATE_LIFT_UP, ושם נבדוק
-        // if (topDist > 0 && topDist <= STOP_DISTANCE_CM) כדי לעצור למעלה.
-        // כרגע עוברים ישר לפנייה.
         
         currentState = STATE_PREPARE_TURN;
       }
